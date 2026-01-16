@@ -46,7 +46,7 @@ Se você não souber a resposta, peça educadamente para o usuário criar uma re
         try {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
             chatRef.current = ai.chats.create({
-                model: 'gemini-2.5-flash',
+                model: 'gemini-3-flash-preview',
                 config: {
                     systemInstruction,
                 },
