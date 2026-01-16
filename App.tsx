@@ -1,11 +1,10 @@
-
-
 import React, { useState, useCallback, useEffect } from 'react';
 import Modal from './components/VehicleInfoCard';
 import RequestForm from './components/PlateInput';
-import { submitRequest, getMockTickets } from './services/geminiService';
 import type { Service, Ticket, User, TicketCategory, TicketStatus } from './types';
-import Chatbot from './components/Chatbot'; // Import the new Chatbot component
+import Chatbot from './components/Chatbot';
+import Loader from './components/Loader';
+import { api } from './services/api';
 import {
   LaptopIcon,
   WifiIcon,
@@ -18,19 +17,12 @@ import {
   CogIcon,
   LogoutIcon,
   QrCodeIcon,
-  PixQrCodePlaceholder,
   HomeIcon,
   CloudIcon,
   TicketIcon,
   UsersIcon,
-  ArchiveBoxIcon, // Import the new icon
+  ArchiveBoxIcon,
 } from './components/icons';
-
-// Mock users for demonstration
-const INITIAL_USERS: User[] = [
-  { id: 1, email: 'admin@cardozo.ti', role: 'admin', password: 'admin' },
-  { id: 2, email: 'cliente@email.com', role: 'user', password: '1234' },
-];
 
 const services: Service[] = [
   { icon: WrenchScrewdriverIcon, title: 'Manutenção Preventiva e Corretiva', description: 'Diagnóstico completo, reparo de hardware, otimização de sistema e remoção de vírus.' },
@@ -151,24 +143,23 @@ const HomePage: React.FC<{
 );
 
 // LOGIN PAGE
-const LoginPage: React.FC<{
-  onLogin: (user: User) => void;
-  users: User[];
-}> = ({ onLogin, users }) => {
+const LoginPage: React.FC<{ onLogin: (user: User) => void; }> = ({ onLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = users.find(
-      (u) => u.email.toLowerCase() === email.toLowerCase() && u.password === password
-    );
-    if (user) {
-      setError('');
+    setError('');
+    setIsLoggingIn(true);
+    try {
+      const user = await api.login({ email, password });
       onLogin(user);
-    } else {
-      setError('Credenciais inválidas. Tente novamente.');
+    } catch (err: any) {
+      setError(err.message || 'Credenciais inválidas. Tente novamente.');
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -186,7 +177,9 @@ const LoginPage: React.FC<{
             <input type="password" value={password} onChange={e => setPassword(e.target.value)} required className="w-full bg-slate-700/50 text-slate-100 px-4 py-2 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 transition" />
           </div>
           {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-          <button type="submit" className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-3 rounded-lg transition-colors !mt-8">Entrar</button>
+          <button type="submit" disabled={isLoggingIn} className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-3 rounded-lg transition-colors !mt-8 disabled:bg-slate-600">
+            {isLoggingIn ? 'Entrando...' : 'Entrar'}
+          </button>
         </form>
       </div>
     </div>
@@ -200,57 +193,46 @@ const AdminDashboard: React.FC<{
   onUpdateTicketStatus: (id: number, status: 'aberto' | 'fechado') => void;
   whatsappNumber: string;
   onWhatsappChange: (number: string) => void;
-  users: User[];
-  onUsersChange: (users: User[]) => void;
-  onUpdateUserPassword: (userId: number, newPass: string) => void;
-}> = ({ currentUser, tickets, onUpdateTicketStatus, whatsappNumber, onWhatsappChange, users, onUsersChange, onUpdateUserPassword }) => {
-  const [adminView, setAdminView] = useState('dashboard'); // 'dashboard', 'tickets', 'history', 'users', 'account', 'settings'
-  const [localUsers, setLocalUsers] = useState(() => JSON.parse(JSON.stringify(users)));
+  onCurrentUserUpdate: (user: User) => void;
+}> = ({ currentUser, tickets, onUpdateTicketStatus, whatsappNumber, onWhatsappChange, onCurrentUserUpdate }) => {
+  const [adminView, setAdminView] = useState('dashboard');
+  const [users, setUsers] = useState<User[]>([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(true);
   const [newPasswords, setNewPasswords] = useState<Record<number, string>>({});
   const [statusFilter, setStatusFilter] = useState<TicketStatus | 'todos'>('todos');
   const [categoryFilter, setCategoryFilter] = useState<TicketCategory | 'todas'>('todas');
   
-  // State for changing admin's own password
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [passwordChangeFeedback, setPasswordChangeFeedback] = useState({ type: '', message: '' });
 
-
   useEffect(() => {
-    setLocalUsers(JSON.parse(JSON.stringify(users)));
-  }, [users]);
+    api.getUsers().then(setUsers).finally(() => setIsLoadingUsers(false));
+  }, []);
   
   const filteredTickets = tickets.filter(ticket => {
       const statusMatch = statusFilter === 'todos' || ticket.status === statusFilter;
       const categoryMatch = categoryFilter === 'todas' || ticket.category === categoryFilter;
       return statusMatch && categoryMatch;
-    }).sort((a, b) => b.id - a.id); // Sort by most recent
+    }).sort((a, b) => b.id - a.id);
 
-  const handleEmailChange = (index: number, newEmail: string) => {
-    const updatedUsers = [...localUsers];
-    updatedUsers[index] = { ...updatedUsers[index], email: newEmail };
-    setLocalUsers(updatedUsers);
+  const handleSaveChanges = async () => {
+    try {
+        const finalUsers = users.map(user => {
+            const newPass = newPasswords[user.id];
+            return (newPass && newPass.trim()) ? { ...user, password: newPass.trim() } : user;
+        });
+        const updatedUsers = await api.updateUsers(finalUsers);
+        setUsers(updatedUsers);
+        setNewPasswords({});
+        alert('Usuários atualizados com sucesso!');
+    } catch (error) {
+        alert('Erro ao salvar as alterações.');
+    }
   };
 
-  const handlePasswordChange = (userId: number, newPass: string) => {
-      setNewPasswords(prev => ({ ...prev, [userId]: newPass }));
-  };
-
-  const handleSaveChanges = () => {
-      const finalUsers = localUsers.map((user: User) => {
-          const newPassword = newPasswords[user.id];
-          if (newPassword && newPassword.trim()) {
-              return { ...user, password: newPassword.trim() };
-          }
-          return user;
-      });
-      onUsersChange(finalUsers);
-      setNewPasswords({});
-      alert('Usuários atualizados com sucesso!');
-  };
-
-  const handleAdminPasswordChange = (e: React.FormEvent) => {
+  const handleAdminPasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordChangeFeedback({ type: '', message: '' });
 
@@ -262,12 +244,22 @@ const AdminDashboard: React.FC<{
       setPasswordChangeFeedback({ type: 'error', message: 'As novas senhas não coincidem ou estão em branco.' });
       return;
     }
+    
+    try {
+        const updatedUsers = users.map(u => u.id === currentUser.id ? { ...u, password: newPassword } : u);
+        const newUsersState = await api.updateUsers(updatedUsers);
+        setUsers(newUsersState);
 
-    onUpdateUserPassword(currentUser.id, newPassword);
-    setPasswordChangeFeedback({ type: 'success', message: 'Senha alterada com sucesso!' });
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmNewPassword('');
+        const updatedCurrentUser = newUsersState.find(u => u.id === currentUser.id);
+        if (updatedCurrentUser) onCurrentUserUpdate(updatedCurrentUser);
+
+        setPasswordChangeFeedback({ type: 'success', message: 'Senha alterada com sucesso!' });
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmNewPassword('');
+    } catch(err) {
+        setPasswordChangeFeedback({ type: 'error', message: 'Falha ao alterar a senha. Tente novamente.' });
+    }
   };
 
   const navItems = [
@@ -311,15 +303,10 @@ const AdminDashboard: React.FC<{
         <aside className="lg:w-64">
           <nav className="flex flex-row lg:flex-col gap-2">
             {navItems.map(item => (
-              <button
-                key={item.id}
-                onClick={() => setAdminView(item.id)}
+              <button key={item.id} onClick={() => setAdminView(item.id)}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors ${
-                  adminView === item.id
-                    ? 'bg-sky-600 text-white shadow-md'
-                    : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
-                }`}
-              >
+                  adminView === item.id ? 'bg-sky-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+                }`}>
                 <item.icon className="w-5 h-5 shrink-0" />
                 <span className="font-semibold text-sm sm:text-base">{item.label}</span>
               </button>
@@ -328,6 +315,41 @@ const AdminDashboard: React.FC<{
         </aside>
 
         <main className="flex-1 min-w-0">
+            {/* O conteúdo das abas permanece o mesmo, mas a lógica de 'users' foi alterada */}
+            {adminView === 'users' && (
+            <div>
+              <h2 className="text-3xl font-bold text-white mb-8">Gerenciar Usuários</h2>
+              {isLoadingUsers ? <Loader/> : (
+                <div className="max-w-2xl mx-auto space-y-6">
+                    {users.map((user: User) => (
+                    <div key={user.id} className="bg-slate-800/50 p-6 rounded-xl border border-slate-700/80">
+                        <p className="text-sm font-bold text-sky-400 mb-4 uppercase">PERFIL: {user.role}</p>
+                        <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-1">Email de Acesso</label>
+                            <input type="email" value={user.email} disabled
+                            className="w-full bg-slate-700/50 text-slate-100 px-4 py-2 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 transition disabled:opacity-50" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-1">Nova Senha</label>
+                            <input type="password" placeholder="Deixe em branco para não alterar" value={newPasswords[user.id] || ''}
+                            onChange={(e) => setNewPasswords(prev => ({ ...prev, [user.id]: e.target.value }))}
+                            className="w-full bg-slate-700/50 text-slate-100 px-4 py-2 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 transition" />
+                        </div>
+                        </div>
+                    </div>
+                    ))}
+                    <div className="pt-4">
+                        <button onClick={handleSaveChanges} className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-3 rounded-lg transition-colors">
+                        Salvar Alterações
+                        </button>
+                    </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Outras views do admin */}
           {adminView === 'dashboard' && (
             <div className="space-y-8">
               <h2 className="text-3xl font-bold text-white">Dashboard</h2>
@@ -451,10 +473,8 @@ const AdminDashboard: React.FC<{
                            </td>
                            <td className="p-4">
                               {ticket.status === 'fechado' && (
-                                <button 
-                                  onClick={() => onUpdateTicketStatus(ticket.id, 'aberto')} 
-                                  className="bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold py-1 px-3 rounded-md transition"
-                                >
+                                <button onClick={() => onUpdateTicketStatus(ticket.id, 'aberto')}
+                                  className="bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold py-1 px-3 rounded-md transition">
                                   Reabrir
                                 </button>
                               )}
@@ -471,50 +491,6 @@ const AdminDashboard: React.FC<{
                </div>
             </div>
           )}
-
-           {adminView === 'users' && (
-            <div>
-              <h2 className="text-3xl font-bold text-white mb-8">Gerenciar Usuários</h2>
-              <div className="max-w-2xl mx-auto space-y-6">
-                {localUsers.map((user: User, index: number) => (
-                  <div key={user.id} className="bg-slate-800/50 p-6 rounded-xl border border-slate-700/80">
-                    <p className="text-sm font-bold text-sky-400 mb-4 uppercase">PERFIL: {user.role}</p>
-                    <div className="space-y-4">
-                      <div>
-                        <label htmlFor={`email-${user.id}`} className="block text-sm font-medium text-slate-300 mb-1">Email de Acesso</label>
-                        <input
-                          type="email"
-                          id={`email-${user.id}`}
-                          value={user.email}
-                          onChange={(e) => handleEmailChange(index, e.target.value)}
-                          className="w-full bg-slate-700/50 text-slate-100 px-4 py-2 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 transition disabled:opacity-50"
-                          disabled={user.role === 'admin'}
-                        />
-                         {user.role === 'admin' && <p className="text-xs text-slate-500 mt-1">O email do administrador não pode ser alterado.</p>}
-                      </div>
-                      <div>
-                        <label htmlFor={`password-${user.id}`} className="block text-sm font-medium text-slate-300 mb-1">Nova Senha</label>
-                        <input
-                          type="password"
-                          id={`password-${user.id}`}
-                          placeholder="Deixe em branco para não alterar"
-                          value={newPasswords[user.id] || ''}
-                          onChange={(e) => handlePasswordChange(user.id, e.target.value)}
-                          className="w-full bg-slate-700/50 text-slate-100 px-4 py-2 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 transition"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                 <div className="pt-4">
-                    <button onClick={handleSaveChanges} className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-3 rounded-lg transition-colors">
-                      Salvar Alterações
-                    </button>
-                  </div>
-              </div>
-            </div>
-          )}
-          
           {adminView === 'account' && (
             <div>
               <h2 className="text-3xl font-bold text-white mb-8">Minha Conta</h2>
@@ -523,29 +499,17 @@ const AdminDashboard: React.FC<{
                   <h3 className="text-lg font-bold text-white">Alterar Minha Senha</h3>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1">Senha Atual</label>
-                    <input 
-                      type="password" 
-                      value={currentPassword}
-                      onChange={e => setCurrentPassword(e.target.value)}
-                      required
+                    <input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} required
                       className="w-full bg-slate-700/50 text-slate-100 px-4 py-2 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 transition" />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1">Nova Senha</label>
-                    <input 
-                      type="password" 
-                      value={newPassword}
-                      onChange={e => setNewPassword(e.target.value)}
-                      required
+                    <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} required
                       className="w-full bg-slate-700/50 text-slate-100 px-4 py-2 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 transition" />
                   </div>
                    <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1">Confirmar Nova Senha</label>
-                    <input 
-                      type="password" 
-                      value={confirmNewPassword}
-                      onChange={e => setConfirmNewPassword(e.target.value)}
-                      required
+                    <input type="password" value={confirmNewPassword} onChange={e => setConfirmNewPassword(e.target.value)} required
                       className="w-full bg-slate-700/50 text-slate-100 px-4 py-2 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500 transition" />
                   </div>
                   {passwordChangeFeedback.message && (
@@ -562,7 +526,6 @@ const AdminDashboard: React.FC<{
               </div>
             </div>
           )}
-
           {adminView === 'settings' && (
              <div>
               <h2 className="text-3xl font-bold text-white mb-8">Configurações</h2>
@@ -595,7 +558,6 @@ const UserDashboard: React.FC<{
     if (!paymentAmount) return;
     const amount = parseFloat(paymentAmount).toFixed(2).replace('.', ',');
     const text = `Pagamento para Cardozo TI: R$ ${amount}`;
-    // Using a public API for QR code generation
     setQrCodeData(`https://api.qrserver.com/v1/create-qr-code/?size=192x192&data=${encodeURIComponent(text)}`);
   };
   
@@ -603,7 +565,6 @@ const UserDashboard: React.FC<{
     setQrCodeData(null);
     setPaymentAmount('');
   };
-
 
   return (
     <div className="container mx-auto p-4 sm:p-6 space-y-8 animate-fade-in">
@@ -670,19 +631,35 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [isFormLoading, setIsFormLoading] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitted, setIsSubmitted] = useState(false);
   
   const [tickets, setTickets] = useState<Ticket[]>([]);
-  const [users, setUsers] = useState<User[]>(INITIAL_USERS);
-  const [whatsappNumber, setWhatsappNumber] = useState('5511999999999');
-  
-  const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent('Olá! Gostaria de solicitar um orçamento para um serviço de TI.')}`;
+  const [whatsappNumber, setWhatsappNumber] = useState<string>('');
+  const [isAppLoading, setIsAppLoading] = useState(true);
 
   useEffect(() => {
-    getMockTickets().then(setTickets);
+    // Carrega dados iniciais da API
+    const loadData = async () => {
+      try {
+        const [ticketsData, whatsappData] = await Promise.all([
+          api.getTickets(),
+          api.getWhatsappNumber(),
+        ]);
+        setTickets(ticketsData);
+        setWhatsappNumber(whatsappData.number);
+      } catch (error) {
+        console.error("Failed to load initial data", error);
+        // Pode definir um estado de erro global aqui se necessário
+      } finally {
+        setIsAppLoading(false);
+      }
+    };
+    loadData();
   }, []);
+  
+  const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent('Olá! Gostaria de solicitar um orçamento para um serviço de TI.')}`;
   
   const handleNavigate = (targetPage: string) => {
     window.scrollTo(0, 0);
@@ -702,52 +679,57 @@ const App: React.FC = () => {
   const handleOpenModal = () => {
     setIsModalOpen(true);
     setIsSubmitted(false);
-    setError(null);
+    setFormError(null);
   };
 
   const handleCloseModal = () => setIsModalOpen(false);
 
   const handleFormSubmit = useCallback(async (request: Omit<Ticket, 'id' | 'status' | 'createdAt' | 'userEmail'>) => {
-    setError(null);
-    setIsLoading(true);
+    setFormError(null);
+    setIsFormLoading(true);
+    
     try {
-      // In a real app, the userEmail would come from the logged-in user
-      const newTicket = await submitRequest({ ...request, userEmail: currentUser?.email || 'visitante@email.com' });
+      const ticketData = { ...request, userEmail: currentUser?.email || 'visitante@email.com' };
+      const newTicket = await api.createTicket(ticketData);
       setTickets(prev => [...prev, newTicket]);
       setIsSubmitted(true);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Não foi possível enviar sua requisição. Tente novamente.');
+      setFormError(err instanceof Error ? err.message : 'Não foi possível enviar sua requisição. Tente novamente.');
     } finally {
-      setIsLoading(false);
+      setIsFormLoading(false);
     }
   }, [currentUser]);
 
-  const handleUpdateTicketStatus = (id: number, status: 'aberto' | 'fechado') => {
-    setTickets(currentTickets =>
-      currentTickets.map(ticket =>
-        ticket.id === id ? { ...ticket, status } : ticket
-      )
-    );
-  };
-
-  const handleUpdateUserPassword = (userId: number, newPass: string) => {
-    setUsers(currentUsers =>
-      currentUsers.map(user =>
-        user.id === userId ? { ...user, password: newPass } : user
-      )
-    );
-    // Also update currentUser if it's the one being changed
-    if (currentUser?.id === userId) {
-      setCurrentUser(prev => prev ? { ...prev, password: newPass } : null);
+  const handleUpdateTicketStatus = async (id: number, status: 'aberto' | 'fechado') => {
+    try {
+      const updatedTicket = await api.updateTicketStatus(id, status);
+      setTickets(currentTickets =>
+        currentTickets.map(ticket => ticket.id === id ? updatedTicket : ticket)
+      );
+    } catch (error) {
+        alert('Falha ao atualizar o status do chamado.');
     }
   };
+
+  const handleWhatsappChange = async (newNumber: string) => {
+      try {
+          const updated = await api.updateWhatsappNumber(newNumber);
+          setWhatsappNumber(updated.number);
+      } catch (error) {
+          alert('Falha ao atualizar o número do WhatsApp.');
+      }
+  }
   
   const renderPage = () => {
+    if (isAppLoading) {
+      return <div className="flex-grow flex items-center justify-center"><Loader text="Carregando aplicação..." /></div>;
+    }
+
     switch (page) {
       case 'login':
-        return <LoginPage onLogin={handleLogin} users={users} />;
+        return <LoginPage onLogin={handleLogin} />;
       case 'admin_dashboard':
-        return currentUser?.role === 'admin' ? <AdminDashboard currentUser={currentUser} tickets={tickets} onUpdateTicketStatus={handleUpdateTicketStatus} whatsappNumber={whatsappNumber} onWhatsappChange={setWhatsappNumber} users={users} onUsersChange={setUsers} onUpdateUserPassword={handleUpdateUserPassword} /> : <HomePage onOpenModal={handleOpenModal} whatsappUrl={whatsappUrl} />;
+        return currentUser?.role === 'admin' ? <AdminDashboard currentUser={currentUser} tickets={tickets} onUpdateTicketStatus={handleUpdateTicketStatus} whatsappNumber={whatsappNumber} onWhatsappChange={handleWhatsappChange} onCurrentUserUpdate={setCurrentUser} /> : <HomePage onOpenModal={handleOpenModal} whatsappUrl={whatsappUrl} />;
       case 'user_dashboard':
         return currentUser?.role === 'user' ? <UserDashboard tickets={tickets} user={currentUser} /> : <HomePage onOpenModal={handleOpenModal} whatsappUrl={whatsappUrl} />;
       case 'home':
@@ -781,7 +763,7 @@ const App: React.FC = () => {
             </button>
           </div>
         ) : (
-          <RequestForm onSubmit={handleFormSubmit} isLoading={isLoading} error={error} />
+          <RequestForm onSubmit={handleFormSubmit} isLoading={isFormLoading} error={formError} />
         )}
       </Modal>
 
